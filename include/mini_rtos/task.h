@@ -18,8 +18,23 @@ public:
     using EntryFunction = std::function<void(Task&, YieldCallback)>;
 
     enum class ExecutionResult {
+        /// entry_ (or the scheduler) explicitly terminated the task.
         Completed,
-        Yielded
+        /// entry_ called the yield callback — the task voluntarily released
+        /// the CPU before its dispatch-time work would otherwise be judged done.
+        Yielded,
+        /// entry_ returned normally without yielding or explicitly
+        /// terminating. The task remains Running; it is NOT considered
+        /// finished just because entry_'s body finished — remaining burst
+        /// time still governs when the scheduler treats it as complete.
+        /// This distinguishes "this dispatch's printed/visible work is done"
+        /// from "this task has no more CPU time to consume".
+        Ran,
+        /// entry_ blocked the task (e.g. waiting on a mutex/semaphore) by
+        /// calling markBlocked-equivalent logic itself, typically via the
+        /// scheduler's enqueueBlocked(). The scheduler must not treat this
+        /// task as still runnable.
+        Blocked
     };
 
     Task(TaskId id,
@@ -48,6 +63,18 @@ public:
     bool canTransitionTo(TaskState nextState) const noexcept;
 
     void setPriority(Priority priority) noexcept;
+    /// Returns the task's original (non-inherited) priority.
+    Priority basePriority() const noexcept;
+    /// Temporarily raises the task's effective priority for priority inheritance.
+    /// Only applies if newPriority represents a higher priority than the current
+    /// effective priority (per this project's convention: higher numeric value
+    /// = higher priority). No-op otherwise.
+    void boostPriority(Priority newPriority) noexcept;
+    /// Restores the task's effective priority to its original base priority.
+    void restorePriority() noexcept;
+    /// True if the task's effective priority currently differs from its base
+    /// priority (i.e. it is holding an inherited boost).
+    bool isPriorityBoosted() const noexcept;
     void setState(TaskState newState);
     void setStackPointer(std::size_t stackPointer) noexcept;
     /// Sets the task's initial and remaining burst time budget.
@@ -63,6 +90,7 @@ private:
     TaskId id_;
     std::string name_;
     Priority priority_;
+    Priority basePriority_;
     TaskState state_;
     std::size_t stackPointer_;
     std::size_t stackSize_;

@@ -22,6 +22,12 @@ private:
     std::size_t quantumCounter_;
     TickCount tickCount_;
     ContextSwitchLog log_;
+    /// True when currentTask_ has just been dispatched and hasn't had its one
+    /// execute() call yet. This must be a persistent member, not a local
+    /// variable in tick() — a task can become current mid-tick() (e.g. right
+    /// after another task yields), and its own execute() call must happen on
+    /// the *next* tick(), not be skipped or run twice.
+    bool needsExecute_;
 };
 
 } // namespace mini_rtos

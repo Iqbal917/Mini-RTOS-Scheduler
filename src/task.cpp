@@ -15,6 +15,7 @@ Task::Task(TaskId id,
     : id_(id),
       name_(std::move(name)),
       priority_(priority),
+      basePriority_(priority),
       state_(TaskState::Ready),
       stackPointer_(stackSize),
       stackSize_(stackSize),
@@ -79,8 +80,15 @@ bool Task::canTransitionTo(TaskState nextState) const noexcept {
             return nextState == TaskState::Running || nextState == TaskState::Blocked ||
                    nextState == TaskState::Terminated;
         case TaskState::Running:
+            // Running -> Running is a legal self-transition (no-op). This matters
+            // because schedulers set state to Running both externally (for
+            // bookkeeping/display, before dispatching a tick) and Task::execute()
+            // also sets it internally right before invoking entry_. Without this,
+            // the second setState(Running) call is silently rejected by the state
+            // machine, execute() bails out via its canTransitionTo(Running) guard,
+            // and entry_ never actually runs.
             return nextState == TaskState::Ready || nextState == TaskState::Blocked ||
-                   nextState == TaskState::Terminated;
+                   nextState == TaskState::Terminated || nextState == TaskState::Running;
         case TaskState::Blocked:
             return nextState == TaskState::Ready || nextState == TaskState::Terminated;
         case TaskState::Terminated:
@@ -92,6 +100,27 @@ bool Task::canTransitionTo(TaskState nextState) const noexcept {
 
 void Task::setPriority(Priority priority) noexcept {
     priority_ = priority;
+}
+
+Priority Task::basePriority() const noexcept {
+    return basePriority_;
+}
+
+void Task::boostPriority(Priority newPriority) noexcept {
+    // Convention: higher numeric value = higher priority. Only raise, never lower —
+    // a boost should never accidentally demote a task below its current effective
+    // priority (e.g. if it already inherited a higher boost from another waiter).
+    if (newPriority > priority_) {
+        priority_ = newPriority;
+    }
+}
+
+void Task::restorePriority() noexcept {
+    priority_ = basePriority_;
+}
+
+bool Task::isPriorityBoosted() const noexcept {
+    return priority_ != basePriority_;
 }
 
 void Task::setState(TaskState newState) {
@@ -143,8 +172,9 @@ Task::ExecutionResult Task::execute() {
 
     entry_(*this, [this]() { this->yield(); });
 
-    if (state_ == TaskState::Running) {
-        markTerminated();
+    if (state_ == TaskState::Terminated) {
+        // entry_ explicitly called markTerminated() on itself (a task can
+        // opt into self-termination independent of remaining burst time).
         return ExecutionResult::Completed;
     }
 
@@ -152,7 +182,19 @@ Task::ExecutionResult Task::execute() {
         return ExecutionResult::Yielded;
     }
 
-    return ExecutionResult::Completed;
+    if (state_ == TaskState::Blocked) {
+        // entry_ itself blocked the task (e.g. failed to acquire a mutex and
+        // called the scheduler's enqueueBlocked()). Let the caller know so
+        // it doesn't treat this as still-runnable work.
+        return ExecutionResult::Blocked;
+    }
+
+    // state_ is still Running: entry_ finished its dispatch-time work without
+    // yielding or explicitly terminating. The task is NOT automatically done —
+    // it keeps occupying the CPU per its remaining burst time. The scheduler
+    // decides when it actually completes (burst exhausted) or is preempted
+    // (quantum expired / higher-priority task arrives).
+    return ExecutionResult::Ran;
 }
 
 void Task::yield() {
