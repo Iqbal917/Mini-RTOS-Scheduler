@@ -11,7 +11,7 @@ context switching, preemption, priority inversion, and how to fix it.
 ```bash
 cmake -S . -B build
 cmake --build build
-./build/mini_rtos_demo
+./build/Debug/mini_rtos_demo.exe
 ```
 
 This runs five demos in sequence: Round Robin, preemptive Priority
